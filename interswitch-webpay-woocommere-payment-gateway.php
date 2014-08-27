@@ -3,7 +3,7 @@
 	Plugin Name: Interswitch Webpay WooCommerce Payment Gateway
 	Plugin URI: http://bosun.me/interswitch-webpay-woocommerce-payment-gateway
 	Description: Interswitch Webpay Woocommerce Payment Gateway allows you to accept payment on your Woocommerce store via Verve Cards, Visa Cards and Mastercards.
-	Version: 1.0.0
+	Version: 1.0.1
 	Author: Tunbosun Ayinla
 	Author URI: http://bosun.me/
 	License:           GPL-2.0+
@@ -419,22 +419,23 @@ function tbz_wc_interswitch_webpay_init() {
 				$query_url = 'https://webpay.interswitchng.com/paydirect/api/v1/gettransaction.json';
 			}
 
-			$url = "$query_url?productid=$product_id&transactionreference=$txnref&amount=$total";
+			$url 	= "$query_url?productid=$product_id&transactionreference=$txnref&amount=$total";
 
-			$hash = $product_id.$txnref.$mac_key;
-			$hash = hash("sha512", $hash);
+			$hash 	= $product_id.$txnref.$mac_key;
+			$hash 	= hash("sha512", $hash);
 
 			$headers = array(
 				'Hash' => $hash
 			);
 
-			$args = array(
-				'timeout'	=> 30,
-				'headers' 	=> $headers
-			);
+			require_once 'lib/Unirest.php';
 
-			$response 		= wp_remote_get( $url, $args );
-			$response  		= json_decode($response['body'], true);
+        	Unirest::verifyPeer(false);
+        	Unirest::timeout(30);
+
+			$request 	= Unirest::get($url, $headers, NULL, NULL, NULL);
+
+			$response 	= (array)$request->body;
 
 			return $response;
 
