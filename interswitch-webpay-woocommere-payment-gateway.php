@@ -3,7 +3,7 @@
 	Plugin Name: Interswitch Webpay WooCommerce Payment Gateway
 	Plugin URI: http://bosun.me/interswitch-webpay-woocommerce-payment-gateway
 	Description: Interswitch Webpay Woocommerce Payment Gateway allows you to accept payment on your Woocommerce store via Verve Cards, Visa Cards and Mastercards.
-	Version: 1.0.1
+	Version: 1.0.2
 	Author: Tunbosun Ayinla
 	Author URI: http://bosun.me/
 	License:           GPL-2.0+
@@ -58,6 +58,9 @@ function tbz_wc_interswitch_webpay_init() {
 
 			// Payment listener/API hook
 			add_action( 'woocommerce_api_wc_tbz_webpay_gateway', array( $this, 'check_webpay_response' ) );
+
+			//Display Transaction Reference on checkout
+			add_action( 'before_woocommerce_pay', array( $this, 'display_transaction_id' ) );
 
 			// Check if the gateway can be used
 			if ( ! $this->is_valid_for_use() ) {
@@ -194,7 +197,10 @@ function tbz_wc_interswitch_webpay_init() {
 				'pay_item_id' 			=> $pay_item_id,
 			);
 
+			update_post_meta( $order->id, '_wc_webpay_txn_id', $txn_ref );
+
 			$webpay_args = apply_filters( 'woocommerce_webpay_args', $webpay_args );
+
 			return $webpay_args;
 		}
 
@@ -214,18 +220,48 @@ function tbz_wc_interswitch_webpay_init() {
 
 			$webpay_args = $this->get_webpay_args( $order );
 
+			// before payment hook
+            do_action('tbz_wc_webpay_before_payment', $webpay_args);
+
 			$webpay_args_array = array();
 
 			foreach ($webpay_args as $key => $value) {
 				$webpay_args_array[] = '<input type="hidden" name="'.esc_attr( $key ).'" value="'.esc_attr( $value ).'" />';
 			}
 
-			return '<form action="'.esc_url( $webpay_adr ).'" method="post" id="webpay_payment_form" target="_top">
-					' . implode('', $webpay_args_array) . '
-					<input type="submit" class="button-alt" id="submit_webpay_payment_form" value="'.__('Make Payment', 'woocommerce').'" />
-					<a class="button cancel" href="'.esc_url( $order->get_cancel_order_url() ).'">'.__('Cancel order &amp; restore cart', 'woocommerce').'</a>
-				</form>';
+			wc_enqueue_js( '
+				$.blockUI({
+						message: "' . esc_js( __( 'Thank you for your order. We are now redirecting you to Interswitch to make payment.', 'woocommerce' ) ) . '",
+						baseZ: 99999,
+						overlayCSS:
+						{
+							background: "#fff",
+							opacity: 0.6
+						},
+						css: {
+							padding:        "20px",
+							zindex:         "9999999",
+							textAlign:      "center",
+							color:          "#555",
+							border:         "3px solid #aaa",
+							backgroundColor:"#fff",
+							cursor:         "wait",
+							lineHeight:		"24px",
+						}
+					});
+				jQuery("#submit_webpay_payment_form").click();
+			' );
 
+			return '<form action="' . esc_url( $webpay_adr ) . '" method="post" id="webpay_payment_form" target="_top">
+					' . implode( '', $webpay_args_array ) . '
+					<!-- Button Fallback -->
+					<div class="payment_buttons">
+						<input type="submit" class="button alt" id="submit_webpay_payment_form" value="' . __( 'Pay via Interswitch Webpay', 'woocommerce' ) . '" /> <a class="button cancel" href="' . esc_url( $order->get_cancel_order_url() ) . '">' . __( 'Cancel order &amp; restore cart', 'woocommerce' ) . '</a>
+					</div>
+					<script type="text/javascript">
+						jQuery(".payment_buttons").hide();
+					</script>
+				</form>';
 		}
 
 	    /**
@@ -251,7 +287,7 @@ function tbz_wc_interswitch_webpay_init() {
 	     * Output for the order received page.
 	    **/
 		function receipt_page( $order ) {
-			echo '<p>'.__('Thank you for your order, please click the button below to make payment.', 'woocommerce').'</p>';
+			echo '<p>' . __( 'Thank you - your order is now pending payment. You should be automatically redirected to Interswitch to make payment.', 'woocommerce' ) . '</p>';
 			echo $this->generate_webpay_form( $order );
 		}
 
@@ -282,7 +318,8 @@ function tbz_wc_interswitch_webpay_init() {
 				$amount_paid    = $response['Amount'] / 100;
 				$response_desc  = $response['ResponseDescription'];
 
-                do_action('tbz_wc_webpay_after_payment', $response);
+				// after payment hook
+                do_action('tbz_wc_webpay_after_payment', $_POST, $response );
 
 				//process a successful transaction
 				if( '00' == $response_code){
@@ -428,17 +465,31 @@ function tbz_wc_interswitch_webpay_init() {
 				'Hash' => $hash
 			);
 
-			require_once 'lib/Unirest.php';
+			$args = array(
+				'timeout'	=> 30,
+				'headers' 	=> $headers
+			);
 
-        	Unirest::verifyPeer(false);
-        	Unirest::timeout(30);
-
-			$request 	= Unirest::get($url, $headers, NULL, NULL, NULL);
-
-			$response 	= (array)$request->body;
+			$response 		= wp_remote_get( $url, $args );
+			$response  		= json_decode($response['body'], true);
 
 			return $response;
 
+		}
+
+	    /**
+	     * Display the Transaction Reference on the payment confirmation page.
+	    **/
+		function display_transaction_id(){
+			$order_id = absint( get_query_var( 'order-pay' ) );
+			$order = new WC_Order( $order_id );
+
+			$payment_method =  $order->payment_method;
+
+			if( !isset( $_GET['pay_for_order'] ) && ( 'tbz_webpay_gateway' == $payment_method ) ){
+				$txn_ref = get_post_meta( $order_id, '_wc_webpay_txn_id', true );
+				echo '<h4>Transaction Reference: '. $txn_ref .'</h4>';
+			}
 		}
 	}
 
@@ -540,7 +591,7 @@ function tbz_wc_interswitch_webpay_init() {
 		if ( 'yes' == $webpay_test_mode ) {
 	    ?>
 		    <div class="update-nag">
-		        <p>Interswitch Webpay testmode is still enabled, remember to disable it when you want to start accepting live payment on your site.</p>
+		        Interswitch Webpay testmode is still enabled, remember to disable it when you want to start accepting live payment on your site.
 		    </div>
 	    <?php
 		}
